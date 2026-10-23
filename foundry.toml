@@ -1,0 +1,27 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+test = "test"
+script = "script"
+solc = "0.8.26"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+ffi = false
+fs_permissions = []
+# Fuzz seed is left unpinned on purpose; the verifier supplies its own.
+fuzz = { runs = 256 }
+
+[fmt]
+line_length = 120
+tab_width = 4
+bracket_spacing = false
+int_types = "long"
+quote_style = "double"
+number_underscore = "thousands"
+
+# Public mainnet endpoint used by the fork tests. No key and no environment
+# variable: the fork test skips itself when this endpoint cannot be reached.
+[rpc_endpoints]
+mainnet = "https://ethereum-rpc.publicnode.com"
