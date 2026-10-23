@@ -107,6 +107,52 @@ contract EthUsdReaderTest is Test {
         assertEq(updatedAt, block.timestamp);
     }
 
+    function test_latestPrice_usesUpdatedAtRatherThanRoundStart() public {
+        // A round can start long before its answer is published. Freshness is
+        // measured from publication, and the returned timestamp must match it.
+        feed.setRound(2, PRICE + 1e8, START - MAX_AGE - 1, START - 1, 2);
+
+        (uint256 price, uint256 updatedAt) = reader.latestPrice();
+        assertEq(price, uint256(PRICE + 1e8));
+        assertEq(updatedAt, START - 1);
+    }
+
+    function test_latestPrice_doesNotFallBackToPreviousGoodAnswer() public {
+        (uint256 firstPrice,) = reader.latestPrice();
+        assertEq(firstPrice, uint256(PRICE));
+
+        feed.setAnswer(0, START);
+        vm.expectRevert(abi.encodeWithSelector(EthUsdReader.BadPrice.selector, int256(0)));
+        reader.latestPrice();
+
+        feed.setAnswer(-1, START);
+        vm.expectRevert(abi.encodeWithSelector(EthUsdReader.BadPrice.selector, int256(-1)));
+        reader.latestPrice();
+
+        feed.setShouldRevert(true);
+        vm.expectRevert(bytes("MockAggregatorV3: forced revert"));
+        reader.latestPrice();
+
+        feed.setShouldRevert(false);
+        vm.warp(START + 1);
+        feed.setAnswer(PRICE + 1e8, START + 1);
+        (uint256 nextPrice, uint256 updatedAt) = reader.latestPrice();
+        assertEq(nextPrice, uint256(PRICE + 1e8));
+        assertEq(updatedAt, START + 1);
+    }
+
+    function test_latestPrice_maximumMaxAgeDoesNotOverflow() public {
+        EthUsdReader r = new EthUsdReader(address(feed), type(uint256).max);
+        feed.setAnswer(PRICE, 1);
+        vm.warp(type(uint256).max);
+
+        // Adding maxAge to updatedAt would overflow, but this answer's age is
+        // representable and strictly less than the configured maximum.
+        (uint256 price, uint256 updatedAt) = r.latestPrice();
+        assertEq(price, uint256(PRICE));
+        assertEq(updatedAt, 1);
+    }
+
     function test_latestPrice_isViewAndCallableByAnyone() public {
         vm.prank(address(0x1234));
         (uint256 price,) = reader.latestPrice();
@@ -126,6 +172,13 @@ contract EthUsdReaderTest is Test {
     function test_latestPrice_revertsWhenUpdatedAtIsZero() public {
         feed.setAnswer(PRICE, 0);
         vm.expectRevert(abi.encodeWithSelector(EthUsdReader.StalePrice.selector, 0));
+        reader.latestPrice();
+    }
+
+    function test_latestPrice_revertsAtMaximumTimestamp() public {
+        feed.setAnswer(PRICE, 1);
+        vm.warp(type(uint256).max);
+        vm.expectRevert(abi.encodeWithSelector(EthUsdReader.StalePrice.selector, uint256(1)));
         reader.latestPrice();
     }
 
@@ -171,6 +224,7 @@ contract EthUsdReaderTest is Test {
     // Fuzz
     // ---------------------------------------------------------------------
 
+    /// forge-config: default.fuzz.runs = 1000
     function testFuzz_freshPositiveAnswerIsReturned(int256 answer, uint256 age, uint256 maxAge) public {
         answer = bound(answer, 1, type(int256).max);
         maxAge = bound(maxAge, 1, type(uint64).max);
@@ -186,6 +240,7 @@ contract EthUsdReaderTest is Test {
         assertEq(updatedAt, now_ - age);
     }
 
+    /// forge-config: default.fuzz.runs = 1000
     function testFuzz_staleAnswerReverts(int256 answer, uint256 excess, uint256 maxAge) public {
         maxAge = bound(maxAge, 1, type(uint64).max);
         excess = bound(excess, 1, type(uint64).max);
@@ -200,6 +255,7 @@ contract EthUsdReaderTest is Test {
         r.latestPrice();
     }
 
+    /// forge-config: default.fuzz.runs = 1000
     function testFuzz_nonPositiveAnswerReverts(int256 answer, uint256 age) public {
         answer = bound(answer, type(int256).min, 0);
         age = bound(age, 0, MAX_AGE);
@@ -211,6 +267,27 @@ contract EthUsdReaderTest is Test {
         reader.latestPrice();
     }
 
+    /// forge-config: default.fuzz.runs = 1000
+    function testFuzz_expirationBoundaryAcrossUint256(int256 answer, uint256 updatedAt, uint256 maxAge) public {
+        answer = bound(answer, 1, type(int256).max);
+        updatedAt = bound(updatedAt, 1, type(uint256).max - 2);
+        maxAge = bound(maxAge, 1, type(uint256).max - updatedAt - 1);
+        uint256 expiresAt = updatedAt + maxAge;
+
+        EthUsdReader r = new EthUsdReader(address(feed), maxAge);
+        feed.setAnswer(answer, updatedAt);
+        vm.warp(expiresAt);
+
+        (uint256 price, uint256 returnedUpdatedAt) = r.latestPrice();
+        assertEq(price, uint256(answer));
+        assertEq(returnedUpdatedAt, updatedAt);
+
+        vm.warp(expiresAt + 1);
+        vm.expectRevert(abi.encodeWithSelector(EthUsdReader.StalePrice.selector, updatedAt));
+        r.latestPrice();
+    }
+
+    /// forge-config: default.fuzz.runs = 1000
     function testFuzz_constructorStoresArguments(address aggregator_, uint256 maxAge_) public {
         vm.assume(aggregator_ != address(0));
         maxAge_ = bound(maxAge_, 1, type(uint256).max);
